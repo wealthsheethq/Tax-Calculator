@@ -72,6 +72,7 @@
   }
   .money input { padding-left: 26px; font-variant-numeric: tabular-nums; }
   input:focus, select:focus { outline: 3px solid rgba(201,161,74,.35); border-color: var(--gold-dark); }
+  .hidden { display: none; }
   .seg { display: flex; border: 1px solid #cdc6b6; border-radius: 10px; overflow: hidden; margin-bottom: 8px; }
   .seg button {
     flex: 1; font: inherit; font-size: 14px; border: 0; background: #fff; color: var(--navy-ink);
@@ -116,6 +117,8 @@
   .q { border: 1px solid var(--line); border-radius: 10px; padding: 10px 8px; text-align: center; }
   .q .d { font-size: 13px; color: var(--muted); margin: 0; }
   .q .a { font-weight: 700; margin: 2px 0 0; font-variant-numeric: tabular-nums; }
+  .q.past { background: #f3f0e8; }
+  .q.past .a { color: #9a4b14; font-weight: 600; }
   .note { font-size: 14px; color: var(--muted); margin: 10px 0 0; }
 
   /* CTA */
@@ -173,6 +176,12 @@
         <span class="hint">Leave blank if you don't have a day job. If you file jointly, include both spouses' wages.</span>
       </div>
 
+      <div class="field hidden" id="spouse-f">
+        <label for="spouseWages">W-2 wages of the spouse who has the side hustle <span class="opt">(full year)</span></label>
+        <div class="money"><span>$</span><input id="spouseWages" type="text" inputmode="decimal" placeholder="0" autocomplete="off"></div>
+        <span class="hint">The Social Security wage base applies to each person separately, so only this spouse's wages count toward it. Leave blank if they have no W-2 job.</span>
+      </div>
+
       <div class="field">
         <span class="label" id="period-l">My side hustle numbers are</span>
         <div class="seg" role="group" aria-labelledby="period-l">
@@ -197,7 +206,7 @@
       <div class="field">
         <label for="withheld">Federal tax withheld from your W-2 job <span class="opt">(optional, full year)</span></label>
         <div class="money"><span>$</span><input id="withheld" type="text" inputmode="decimal" placeholder="0" autocomplete="off"></div>
-        <span class="hint">Federal income tax withheld per paycheck &times; paychecks in the year.</span>
+        <span class="hint">Federal income tax withheld per paycheck &times; paychecks in the year. If you leave this blank, we assume your withholding covers the tax on your wages.</span>
       </div>
     </section>
 
@@ -255,7 +264,7 @@ var TAX_CONFIG = {
   seNetEarningsFactor: 0.9235,         // Net earnings from SE = 92.35% of net profit
   seSocialSecurityRate: 0.124,         // Social Security portion of SE tax (12.4%)
   seMedicareRate: 0.029,               // Medicare portion of SE tax (2.9%)
-  socialSecurityWageBase: 184500,      // Social Security wage base; W-2 wages count toward it first
+  socialSecurityWageBase: 184500,      // Social Security wage base, per person; that person's W-2 wages count toward it first
   seMinimumNetEarnings: 400,           // No SE tax if net earnings from SE are under $400
   seDeductionShare: 0.5,               // Deductible share of SE tax (half)
 
@@ -323,20 +332,26 @@ function incomeTax(taxable, status) {
   return { tax: tax, marginal: marginal };
 }
 
+// inp: { status, wages (household), spouseWages (MFJ: side-hustle spouse's wages),
+//        gross, expenses, withheld (null = left blank), today (Date) }
 function estimate(inp) {
   var C = TAX_CONFIG;
   var status = inp.status;
   var wages = Math.max(0, inp.wages);
-  var withheld = Math.max(0, inp.withheld);
+  var withholdingBlank = inp.withheld === null || inp.withheld === undefined;
+  var withheld = withholdingBlank ? 0 : Math.max(0, inp.withheld);
   var stdDed = C.standardDeduction[status];
 
   // Net self-employment profit
   var profit = inp.gross - inp.expenses;
 
-  // Self-employment tax: SS portion capped at the wage base remaining after W-2 wages
+  // Self-employment tax: SS portion capped at the wage base remaining after the
+  // side-hustle earner's own W-2 wages (the wage base is per person, so under MFJ
+  // only the side-hustle spouse's wages count; total household wages still drive income tax)
+  var earnerWages = status === "mfj" ? Math.min(wages, Math.max(0, inp.spouseWages || 0)) : wages;
   var seEarnings = profit > 0 ? profit * C.seNetEarningsFactor : 0;
   if (seEarnings < C.seMinimumNetEarnings) seEarnings = 0;
-  var ssRoom = Math.max(0, C.socialSecurityWageBase - wages);
+  var ssRoom = Math.max(0, C.socialSecurityWageBase - earnerWages);
   var ssBase = Math.min(seEarnings, ssRoom);
   var seSocialSecurity = ssBase * C.seSocialSecurityRate;
   var seMedicare = seEarnings * C.seMedicareRate;
@@ -358,16 +373,35 @@ function estimate(inp) {
   var extraIncomeTax = withSide.tax - withoutSide.tax;
   var extraTax = seTax + extraIncomeTax;
   var totalTax = withSide.tax + seTax;
-  var balanceDue = Math.max(0, totalTax - withheld);
+
+  // Amount to cover with estimated payments. If there are W-2 wages but withholding was
+  // left blank, assume withholding covers the tax on the wages and pay only the side hustle's share.
+  var assumeWithholdingCoversWages = wages > 0 && withholdingBlank;
+  var balanceDue = assumeWithholdingCoversWages
+    ? Math.max(0, extraTax)
+    : Math.max(0, totalTax - withheld);
+
+  // Split the balance across the due dates that haven't passed yet (a date equal to today counts as not passed)
+  var today = new Date(inp.today || new Date()); today.setHours(0, 0, 0, 0);
+  var dueDates = C.estimatedPaymentDueDates.map(function (s) { return new Date(s + "T00:00:00"); });
+  var remaining = dueDates.filter(function (d) { return d >= today; }).length;
+  var perPayment = remaining ? balanceDue / remaining : 0;
+  var payments = dueDates.map(function (d) {
+    var past = d < today;
+    return { date: d, pastDue: past, amount: past ? 0 : perPayment };
+  });
 
   return {
-    profit: profit, seEarnings: seEarnings, ssBase: ssBase, seSocialSecurity: seSocialSecurity,
+    profit: profit, earnerWages: earnerWages, ssRoom: ssRoom,
+    seEarnings: seEarnings, ssBase: ssBase, seSocialSecurity: seSocialSecurity,
     seMedicare: seMedicare, seTax: seTax, seDeduction: seDeduction, agi: agi, stdDed: stdDed,
     taxableBeforeQbi: taxableBeforeQbi, qbiIncome: qbiIncome, qbiDeduction: qbiDeduction,
     taxable: taxable, incomeTaxWith: withSide.tax, marginal: withSide.marginal,
     taxableWithout: taxableWithout, incomeTaxWithout: withoutSide.tax,
     extraIncomeTax: extraIncomeTax, extraTax: extraTax, totalTax: totalTax,
-    withheld: withheld, balanceDue: balanceDue, quarterly: balanceDue / 4,
+    withheld: withheld, withholdingBlank: withholdingBlank,
+    assumeWithholdingCoversWages: assumeWithholdingCoversWages, balanceDue: balanceDue,
+    payments: payments, remainingPayments: remaining, perPayment: perPayment,
     setAsideRate: inp.gross > 0 ? Math.max(0, extraTax) / inp.gross : 0
   };
 }
@@ -397,7 +431,14 @@ if (typeof document !== "undefined") (function () {
   function render() {
     var gross = num("gross"), expenses = num("expenses"), factor = 1;
     if (period === "ytd") { factor = 1 / yearFraction(); gross *= factor; expenses *= factor; }
-    var r = estimate({ status: $("status").value, wages: num("wages"), gross: gross, expenses: expenses, withheld: num("withheld") });
+    var status = $("status").value;
+    $("spouse-f").classList.toggle("hidden", status !== "mfj");
+    var r = estimate({
+      status: status, wages: num("wages"), spouseWages: num("spouseWages"),
+      gross: gross, expenses: expenses,
+      withheld: String($("withheld").value).trim() === "" ? null : num("withheld"),
+      today: new Date()
+    });
 
     $("o-pct").textContent = pct(r.setAsideRate);
     $("o-sub").textContent = gross > 0
@@ -426,17 +467,21 @@ if (typeof document !== "undefined") (function () {
     }).join("");
 
     // Quarterly payments
-    var today = new Date(); today.setHours(0, 0, 0, 0);
-    var passed = 0;
-    $("quarters").innerHTML = TAX_CONFIG.estimatedPaymentDueDates.map(function (s) {
-      var d = new Date(s + "T00:00:00");
-      if (d < today) passed++;
-      return '<div class="q"><p class="d">' + d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) +
-        '</p><p class="a">' + usd(r.quarterly) + "</p></div>";
+    $("quarters").innerHTML = r.payments.map(function (p) {
+      return '<div class="q' + (p.pastDue ? " past" : "") + '"><p class="d">' +
+        p.date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) +
+        '</p><p class="a">' + (p.pastDue ? "Past due" : usd(p.amount)) + "</p></div>";
     }).join("");
-    var note = "Your estimated balance due of " + usd(r.balanceDue) + " (total federal tax minus W-2 withholding), split into four equal payments.";
-    if (r.balanceDue > 0 && r.balanceDue < 1000) note += " Because it's under $1,000, you generally don't have to make quarterly payments, but setting the money aside is still smart.";
-    else if (passed > 0 && r.balanceDue > 0) note += " If a due date has already passed, pay that amount as soon as you can to limit underpayment penalties.";
+    var note = r.assumeWithholdingCoversWages
+      ? "Based on the " + usd(r.balanceDue) + " in extra tax from your side hustle. This assumes the withholding from your day job covers the tax on your wages. Enter your withholding above for a fuller estimate."
+      : "Based on your estimated balance due of " + usd(r.balanceDue) + " (total federal tax minus W-2 withholding).";
+    var nPast = r.payments.length - r.remainingPayments;
+    if (r.remainingPayments === 0) note += " All " + TAX_CONFIG.taxYear + " estimated payment dates have passed. Pay the balance as soon as you can, and no later than the April filing deadline.";
+    else if (nPast > 0) note += " Because " + nPast + " due date" + (nPast > 1 ? "s have" : " has") + " passed, " +
+      (r.remainingPayments > 1 ? "the full amount is split across the " + r.remainingPayments + " remaining payments." : "the full amount goes in the one remaining payment.") +
+      " Paying late can mean a small underpayment penalty, so paying sooner is better.";
+    else note += " Split into four equal payments.";
+    if (r.balanceDue > 0 && r.balanceDue < 1000) note += " Because it's under $1,000, you generally don't have to make estimated payments, but setting the money aside is still smart.";
     if (r.balanceDue >= 1000 && num("wages") > 0) note += " You can also raise the withholding at your day job (Form W-4, line 4c) instead.";
     $("q-note").textContent = note;
 
@@ -446,6 +491,7 @@ if (typeof document !== "undefined") (function () {
     h += row("Net self-employment profit", usd(r.profit));
     h += row("Self-employment tax", usd(r.seTax), "total");
     h += row("Net earnings from SE (92.35% of profit)", usd(r.seEarnings), "sub");
+    if (r.ssBase < r.seEarnings) h += row("Social Security wage base left after " + usd(r.earnerWages) + " in W-2 wages", usd(r.ssRoom), "sub");
     h += row("Social Security 12.4% on " + usd(r.ssBase), usd(r.seSocialSecurity), "sub");
     h += row("Medicare 2.9% on " + usd(r.seEarnings), usd(r.seMedicare), "sub");
     h += row("W-2 wages + profit &minus; half of SE tax (" + usd(r.seDeduction) + ")", usd(r.agi));
@@ -457,8 +503,13 @@ if (typeof document !== "undefined") (function () {
     h += row("Extra income tax from side hustle", usd(r.extraIncomeTax), "total");
     h += row("Total extra federal tax (SE + income tax)", usd(r.extraTax), "total");
     h += row("Total federal tax for the year", usd(r.totalTax));
-    h += row("W-2 withholding", "&minus;" + usd(r.withheld));
-    h += row("Estimated balance due", usd(r.balanceDue), "total");
+    if (r.assumeWithholdingCoversWages) {
+      h += row("Tax on W-2 wages (assumed covered by withholding)", "&minus;" + usd(r.incomeTaxWithout));
+      h += row("Estimated balance due (side hustle tax)", usd(r.balanceDue), "total");
+    } else {
+      h += row("W-2 withholding", "&minus;" + usd(r.withheld));
+      h += row("Estimated balance due", usd(r.balanceDue), "total");
+    }
     $("breakdown").innerHTML = h;
   }
 
@@ -474,7 +525,7 @@ if (typeof document !== "undefined") (function () {
 
   Array.prototype.forEach.call(document.querySelectorAll(".yr"), function (el) { el.textContent = TAX_CONFIG.taxYear; });
   $("copy-yr").textContent = new Date().getFullYear();
-  ["wages", "gross", "expenses", "withheld"].forEach(function (id) {
+  ["wages", "spouseWages", "gross", "expenses", "withheld"].forEach(function (id) {
     $(id).addEventListener("input", render);
     $(id).addEventListener("blur", function () {
       var v = num(id);

@@ -43,7 +43,7 @@ After editing, open `index.html` in a browser, enter a scenario you've worked ou
 
 ## What the calculator does (and doesn't) include
 
-**Includes:** net SE profit, SE tax (Social Security portion capped at the wage base left after W-2 wages), the deduction for half of SE tax, the standard deduction, a simplified 20% QBI deduction (limited to 20% of taxable income before QBI, with no phase-outs), federal income tax brackets, the extra tax caused by the side hustle (tax with it minus tax without it), and a balance due after W-2 withholding split into four quarterly payments.
+**Includes:** net SE profit, SE tax (Social Security portion capped at the wage base left after the side-hustle earner's own W-2 wages; for Married Filing Jointly a separate field asks for that spouse's wages, while total household wages still drive income tax), the deduction for half of SE tax, the standard deduction, a simplified 20% QBI deduction (limited to 20% of taxable income before QBI, with no phase-outs), federal income tax brackets, the extra tax caused by the side hustle (tax with it minus tax without it), and a balance due split across the estimated payment dates that haven't passed yet (past dates show "Past due"). The balance is total tax minus W-2 withholding; if W-2 wages are entered but withholding is left blank, it's the side hustle's extra tax only, on the assumption that withholding covers the tax on wages.
 
 **Excludes:** state and local tax, credits, itemized deductions, other income, Additional Medicare Tax, QBI phase-outs and SSTB limits, and deductions for SE health insurance or retirement contributions.
 
