@@ -12,7 +12,7 @@ Everything is in one file, `index.html`, with inline CSS and JavaScript. There a
 
 ## Setting the Etsy link
 
-In `index.html`, search for `ETSY_LISTING_URL_HERE` and replace it with the Side Hustle Budget Planner listing URL.
+The "Get the Side Hustle Budget Planner" button links to https://www.etsy.com/listing/4499434187/side-hustle-budget-planner-income. To change it, search `index.html` for `etsy-link` and edit its `href`.
 
 ## Updating the tax figures each year
 
